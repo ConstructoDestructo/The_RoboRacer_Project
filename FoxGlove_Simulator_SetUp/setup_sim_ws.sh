@@ -33,6 +33,7 @@ fi
 source "$WORKSPACE/.venv/bin/activate"
 
 python3 -m pip install --upgrade pip
+python3 -m pip install scipy
 
 cd "$SRC_DIR"
 
@@ -67,6 +68,7 @@ rosdep install \
     --ignore-src \
     --from-paths src \
     --rosdistro humble \
+    --skip-keys python3-scipy \
     -y
 
 colcon build
