@@ -65,4 +65,4 @@ colcon build
 echo
 echo "Workspace setup complete."
 echo "Use the following command to activate the simulator environment:"
-echo "source $WORKSPACE/sim_ws_setup/setup_sim_env.sh"
+echo "source $HOME/sim_ws_setup/setup_sim_env.sh"

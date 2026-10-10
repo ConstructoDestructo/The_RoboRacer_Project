@@ -2,6 +2,54 @@
 
 This guide explains how to install and automatically prepare the F1TENTH ROS 2 Humble simulation environment.
 
+## Recommended: GitHub Codespaces
+
+This repository includes a Codespaces configuration that runs the simulator in a cloud development environment. This is useful when a teammate's computer does not have enough CPU, memory, or graphics capability to run the simulator locally.
+
+### Create a Codespace
+
+1. Open this repository on GitHub.
+2. Select the `Ricky's-CodeSpace` branch.
+3. Select **Code → Codespaces → Create codespace on Ricky's-CodeSpace**.
+4. Wait for Codespaces to build the development container.
+
+The container installs ROS 2 Humble and the required build tools. Its first-time setup then creates `$HOME/sim_ws`, clones the F1TENTH repositories, installs `f1tenth_gym`, installs ROS dependencies, and builds the workspace.
+
+After the Codespace finishes creating, start the simulator with:
+
+```bash
+./launch_sim.sh
+```
+
+The launcher uses `open_foxglove:=false` because the Codespace cannot open a browser on the remote container. Port `8765` is forwarded automatically for the Foxglove WebSocket connection.
+
+### Connect Foxglove
+
+1. Leave the simulator terminal running.
+2. Open the **PORTS** panel in the Codespace.
+3. Find port `8765` labeled **Foxglove WebSocket**.
+4. Open Foxglove in a browser.
+5. Select **Open connection → Foxglove WebSocket**.
+6. Use the forwarded URL for port `8765` rather than `ws://localhost:8765`.
+
+The local `ws://localhost:8765` address only works when Foxglove and the simulator are running on the same computer. In a Codespace, the forwarded port URL is required.
+
+If Codespaces displays the forwarded address as an `https://` URL, use the same host with the WebSocket scheme `wss://` when Foxglove asks for a Foxglove WebSocket connection.
+
+Import this layout into Foxglove for the recommended visualization:
+
+```text
+sim_ws/src/f1tenth_gym_ros/config/foxglove/gym_bridge_foxglove.json
+```
+
+RViz is not the default Codespaces workflow because it requires a remote graphical display. Foxglove is recommended for Codespaces.
+
+### Codespaces resource and cost notes
+
+Codespaces run on cloud virtual machines. Machine sizes, availability, and billing depend on the GitHub account or organization. Stop the Codespace when it is not being used so it does not continue consuming resources.
+
+The simulator still sends visualization data to the local browser, so Foxglove uses some local graphics resources even though the ROS simulation runs remotely.
+
 ## Prerequisites
 
 Install the following before running the setup script:
@@ -27,10 +75,12 @@ Follow the official ROS 2 Humble installation instructions before continuing:
 
 ## 1. Get the setup scripts
 
-Clone this repository, replacing `<repository-url>` with the URL for this GitHub repository:
+Clone the setup repository and check out the Codespaces branch:
 
 ```bash
-git clone <repository-url> "$HOME/f1tenth-sim-setup"
+git clone --branch "Ricky's-CodeSpace" \
+    https://github.com/ConstructoDestructo/The_RoboRacer_Project.git \
+    "$HOME/f1tenth-sim-setup"
 ```
 
 Create the directory that will store the setup scripts:
@@ -42,8 +92,8 @@ mkdir -p "$HOME/sim_ws_setup"
 Copy the scripts into that directory:
 
 ```bash
-cp "$HOME/f1tenth-sim-setup/setup_sim_ws.sh" \
-   "$HOME/f1tenth-sim-setup/setup_sim_env.sh" \
+cp "$HOME/f1tenth-sim-setup/FoxGlove_Simulator_SetUp/setup_sim_ws.sh" \
+   "$HOME/f1tenth-sim-setup/FoxGlove_Simulator_SetUp/setup_sim_env.sh" \
    "$HOME/sim_ws_setup/"
 ```
 
@@ -59,8 +109,10 @@ The expected directory layout is:
 ```text
 $HOME/
 ├── f1tenth-sim-setup/
-│   ├── setup_sim_ws.sh
-│   └── setup_sim_env.sh
+│   └── FoxGlove_Simulator_SetUp/
+│       ├── setup_sim_ws.sh
+│       ├── setup_sim_env.sh
+│       └── SIMULATOR_SETUP.md
 ├── sim_ws_setup/
 │   ├── setup_sim_ws.sh
 │   └── setup_sim_env.sh
