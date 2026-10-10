@@ -64,6 +64,8 @@ source "$ROS_SETUP"
 
 cd "$WORKSPACE"
 
+apt-get update 
+
 rosdep install \
     --ignore-src \
     --from-paths src \
