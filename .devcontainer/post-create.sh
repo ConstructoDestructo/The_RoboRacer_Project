@@ -16,16 +16,6 @@ cp "$SCRIPT_SOURCE/setup_sim_ws.sh" \
 chmod +x "$SCRIPT_DESTINATION/setup_sim_ws.sh"
 chmod +x "$SCRIPT_DESTINATION/setup_sim_env.sh"
 
-if ! grep -Fq 'source "$HOME/sim_ws_setup/setup_sim_env.sh"' "$HOME/.bashrc"; then
-    cat >> "$HOME/.bashrc" <<'BASHRC'
-
-# Automatically prepare the F1TENTH simulator environment.
-if [ -f "$HOME/sim_ws_setup/setup_sim_env.sh" ]; then
-    source "$HOME/sim_ws_setup/setup_sim_env.sh"
-fi
-BASHRC
-fi
-
 "$SCRIPT_DESTINATION/setup_sim_ws.sh"
 
 echo
