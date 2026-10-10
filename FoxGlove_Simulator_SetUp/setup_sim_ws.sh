@@ -16,6 +16,15 @@ if [ ! -f "$ROS_SETUP" ]; then
 fi
 
 mkdir -p "$SRC_DIR"
+ACKERMANN_DIR="$SRC_DIR/ackermann_msgs"
+
+if [ ! -d "$ACKERMANN_DIR" ]; then
+    git clone -b ros2 \
+        https://github.com/ros-drivers/ackermann_msgs.git \
+        "$ACKERMANN_DIR"
+else
+    echo "ackermann_msgs already exists. Skipping clone."
+fi
 
 if [ ! -d "$WORKSPACE/.venv" ]; then
     python3 -m venv --system-site-packages "$WORKSPACE/.venv"
