@@ -84,20 +84,67 @@ You can then run other ROS 2 nodes or controllers in that terminal. Leave the te
 
 ## 7. Add and run custom team packages
 
-Place custom ROS 2 packages under:
+### What is a package directory?
 
-```text
-custom_packages/<team-member>/<package-name>/
-```
+A package directory is simply a folder containing one ROS 2 program. It keeps the files for one controller together.
 
-For example:
+For example, a wall-following package might look like this:
 
 ```text
 custom_packages/ricardo/wall_follow/
-├── package.xml
-├── CMakeLists.txt
+├── package.xml       # Describes the ROS package
+├── CMakeLists.txt    # Tells ROS 2 how to build the C++ code
 └── src/
+    └── wall_node.cpp # The actual controller code
 ```
+
+Each teammate should use their own folder so people do not accidentally edit the same files. For example:
+
+```text
+custom_packages/
+├── marcos/wall_follow/
+├── aaron/safety_controller/
+├── brendan/lidar_controller/
+└── ricardo/wall_follow/
+```
+
+The first folder identifies the teammate. The second folder identifies the ROS package. Do not put multiple people’s source files into one package unless you are intentionally working together on that package.
+
+### What is a Git branch?
+
+A branch is a separate version of the repository. It lets one person work on changes without immediately changing the shared branch used by everyone else.
+
+Think of it this way:
+
+```text
+Shared_CodeBase       # Stable shared version
+├── marcos-controller
+├── aaron-controller
+├── brendan-controller
+└── ricardo-controller
+```
+
+Each teammate should create their own branch from `Shared_CodeBase`, create their package folder there, and make changes on that branch.
+
+### Beginner workflow
+
+1. On GitHub, open the repository and select the `Shared_CodeBase` branch.
+2. Select the branch menu, type your name followed by `-controller`, and create the new branch. For example:
+
+   ```text
+   marcos-controller
+   ```
+
+3. Create your package inside:
+
+   ```text
+   custom_packages/your-name/your-package-name/
+   ```
+
+4. Commit your changes to your branch.
+5. When your code is ready to share, create a pull request asking to merge your branch into `Shared_CodeBase`.
+
+If someone is only testing code and does not need to share changes yet, they can work in their own branch without creating a pull request.
 
 The Codespace links `custom_packages` into `$HOME/sim_ws/src/custom_packages` during setup. After adding a package, rebuild the workspace:
 
