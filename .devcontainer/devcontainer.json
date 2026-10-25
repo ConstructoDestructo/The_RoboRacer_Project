@@ -1,0 +1,17 @@
+{
+    "name": "F1TENTH ROS 2 Humble Simulator",
+    "build": {
+        "dockerfile": "Dockerfile",
+        "context": ".."
+    },
+    "remoteUser": "root",
+    "forwardPorts": [8765],
+    "portsAttributes": {
+        "8765": {
+            "label": "Foxglove WebSocket",
+            "protocol": "http",
+            "onAutoForward": "notify"
+        }
+    },
+    "postCreateCommand": "bash .devcontainer/post-create.sh"
+}
