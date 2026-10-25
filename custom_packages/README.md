@@ -54,6 +54,52 @@ Each package must have a unique ROS package name in `package.xml`.
 
 The Codespace links this directory into `$HOME/sim_ws/src/custom_packages`, so the packages are built with the simulator without being copied.
 
+## Do packages need to include an executable?
+
+No. Teammates should commit the package source code and build files. They do not need to build the package on their own computer or commit a prebuilt executable.
+
+The Codespace builds the package with `colcon build`. The compiled executable is generated inside the Codespace under the workspace's `build/` and `install/` directories.
+
+Do not commit these generated directories:
+
+```text
+build/
+install/
+log/
+```
+
+For a C++ package, the minimum source layout is:
+
+```text
+wall_follow/
+├── package.xml
+├── CMakeLists.txt
+└── src/
+    └── wall_node.cpp
+```
+
+The executable is defined in `CMakeLists.txt`. For example:
+
+```cmake
+add_executable(wall_node src/wall_node.cpp)
+
+install(TARGETS
+  wall_node
+  DESTINATION lib/${PROJECT_NAME}
+)
+```
+
+After the package is added to the repository, the teammate builds and runs it in the Codespace:
+
+```bash
+cd "$HOME/sim_ws"
+colcon build --packages-select wall_follow --symlink-install
+source install/local_setup.bash
+ros2 run wall_follow wall_node
+```
+
+For a Python package, the source file and Python package configuration replace `CMakeLists.txt`. The same principle applies: commit the source, then let the Codespace build and install it.
+
 To build after adding or changing packages:
 
 ```bash

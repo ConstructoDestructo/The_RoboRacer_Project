@@ -1,0 +1,18 @@
+# ROS 2 and colcon generated files
+build/
+install/
+log/
+**/build/
+**/install/
+**/log/
+
+# Python generated files and virtual environments
+.venv/
+__pycache__/
+*.py[cod]
+
+# Local editor and operating-system files
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

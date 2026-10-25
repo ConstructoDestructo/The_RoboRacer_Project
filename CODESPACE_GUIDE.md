@@ -4,16 +4,39 @@ This guide explains how to run the F1TENTH simulator in GitHub Codespaces and vi
 
 Codespaces runs the ROS 2 simulator in the cloud, so teammates do not need a powerful computer or a local ROS 2 installation.
 
-## 1. Create the Codespace
+## 1. Prepare your branch and package before creating a Codespace
+
+If you are adding or testing your own ROS 2 package, prepare it before creating the Codespace. This makes sure the Codespace starts with your package already available.
+
+Follow [TEAM_PACKAGE_UPLOAD.md](TEAM_PACKAGE_UPLOAD.md) for the beginner-friendly GitHub Desktop instructions:
+
+1. Install and sign in to GitHub Desktop.
+2. Clone `The_RoboRacer_Project`.
+3. Switch to the `Shared_CodeBase` branch.
+4. Create a personal branch, such as `ricardo-controller` or `marcos-controller`.
+5. Copy the complete package folder into:
+
+   ```text
+   custom_packages/<your-name>/<package-name>/
+   ```
+
+6. Commit the package to your personal branch.
+7. Publish the branch to GitHub.
+
+Do not commit personal package work directly to `Shared_CodeBase`. You can create a pull request into `Shared_CodeBase` after testing the package.
+
+## 2. Create the Codespace
 
 1. Open the repository on GitHub.
-2. Select the `Ricky's-CodeSpace` branch.
-3. Select **Code → Codespaces → Create codespace on Ricky's-CodeSpace**.
+2. Select the branch you want to use:
+   - Use your personal branch if you want to test your own package.
+   - Use `Shared_CodeBase` if you only want the shared simulator without unmerged personal work.
+3. Select **Code → Codespaces → Create codespace on `<selected branch>`**.
 4. Wait for the Codespace container to finish building.
 
 The first setup can take several minutes. It creates the ROS workspace, installs the F1TENTH packages, installs dependencies, and builds the workspace.
 
-## 2. Ignore the startup warning
+## 3. Ignore the startup warning
 
 After the Codespace opens, you may see a message similar to:
 
@@ -26,7 +49,7 @@ If the Codespace creation log says **Workspace setup complete** and **Codespace 
 
 Do not run the workspace setup again unless the setup actually failed or `$HOME/sim_ws` was deleted.
 
-## 3. Launch the simulator
+## 4. Launch the simulator
 
 From the repository root, run:
 
@@ -36,7 +59,7 @@ From the repository root, run:
 
 Keep this terminal open while using the simulator. The command starts the ROS 2 bridge and publishes the simulator data through port `8765`.
 
-## 4. Connect Foxglove
+## 5. Connect Foxglove
 
 1. Open the **Ports** panel in Codespaces.
 2. Find port `8765`, labeled **Foxglove WebSocket**.
@@ -62,7 +85,7 @@ Do not use `ws://localhost:8765`. In a Codespace, `localhost` refers to the loca
 
 If Foxglove cannot connect, change port `8765` visibility from **Private** to **Public** or **Organization**, if that option is available. Each Codespace has its own forwarded address, so teammates must copy the address from their own Ports panel.
 
-## 5. Load the visualization layout
+## 6. Load the visualization layout
 
 After connecting Foxglove, import this layout from the repository:
 
@@ -72,7 +95,7 @@ src/f1tenth_gym_ros/config/foxglove/gym_bridge_foxglove.json
 
 The layout displays the map, robot models, transforms, and simulator topics.
 
-## 6. Run additional ROS commands
+## 7. Run additional ROS commands
 
 Open a second terminal in the Codespace. Prepare the ROS environment with:
 
@@ -82,7 +105,7 @@ source "$HOME/sim_ws_setup/setup_sim_env.sh"
 
 You can then run other ROS 2 nodes or controllers in that terminal. Leave the terminal running `./launch_sim.sh` open.
 
-## 7. Add and run custom team packages
+## 8. Add and run custom team packages
 
 ### What is a package directory?
 
@@ -109,6 +132,8 @@ custom_packages/
 ```
 
 The first folder identifies the teammate. The second folder identifies the ROS package. Do not put multiple people’s source files into one package unless you are intentionally working together on that package.
+
+The package does not need to contain a prebuilt executable. Teammates commit the source code, `package.xml`, and the appropriate build files. The Codespace compiles the executable when `colcon build` runs. Do not commit the generated `build/`, `install/`, or `log/` directories.
 
 ### What is a Git branch?
 
@@ -165,7 +190,9 @@ The simulator can remain running in the first terminal while each teammate runs 
 
 To test another teammate's package without changing it, build and run that package directly. To modify it independently, copy the complete package into your own directory and give it a unique package name in `package.xml`.
 
-## 8. Update an existing Codespace
+For beginner-friendly instructions on copying a complete package with all of its folders, see [TEAM_PACKAGE_UPLOAD.md](TEAM_PACKAGE_UPLOAD.md).
+
+## 9. Update an existing Codespace
 
 After new changes are pushed to the current branch, run this from the repository root:
 
@@ -175,7 +202,7 @@ After new changes are pushed to the current branch, run this from the repository
 
 The update script pulls the branch, links the custom packages, installs new ROS dependencies, and rebuilds the workspace. It uses `git pull --ff-only`, so local uncommitted changes are not overwritten.
 
-## 9. Stop the simulator and Codespace
+## 10. Stop the simulator and Codespace
 
 To stop the simulator, press:
 

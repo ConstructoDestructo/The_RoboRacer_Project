@@ -9,8 +9,8 @@ This repository includes a Codespaces configuration that runs the simulator in a
 ### Create a Codespace
 
 1. Open this repository on GitHub.
-2. Select the `Ricky's-CodeSpace` branch.
-3. Select **Code → Codespaces → Create codespace on Ricky's-CodeSpace**.
+2. Select the branch you want to use. Use your personal branch if you are testing your own package; otherwise use `Shared_CodeBase`.
+3. Select **Code → Codespaces → Create codespace on the selected branch**.
 4. Wait for Codespaces to build the development container.
 
 The container installs ROS 2 Humble and the required build tools. Its first-time setup then creates `$HOME/sim_ws`, clones the F1TENTH repositories, installs `f1tenth_gym`, installs ROS dependencies, and builds the workspace.
@@ -77,10 +77,10 @@ Follow the official ROS 2 Humble installation instructions before continuing:
 
 ## 1. Get the setup scripts
 
-Clone the setup repository and check out the Codespaces branch:
+Clone the setup repository using the shared simulator branch:
 
 ```bash
-git clone --branch "Ricky's-CodeSpace" \
+git clone --branch "Shared_CodeBase" \
     https://github.com/ConstructoDestructo/The_RoboRacer_Project.git \
     "$HOME/f1tenth-sim-setup"
 ```
@@ -225,6 +225,8 @@ source "$HOME/sim_ws_setup/setup_sim_env.sh"
 ```
 
 ## Team packages
+
+Before creating a Codespace to test a personal package, clone the repository with GitHub Desktop, create a personal branch from `Shared_CodeBase`, copy the complete package folder into the repository, commit and publish the branch, and then create the Codespace from that personal branch. See [TEAM_PACKAGE_UPLOAD.md](../TEAM_PACKAGE_UPLOAD.md).
 
 In the repository, place custom ROS 2 packages under:
 
