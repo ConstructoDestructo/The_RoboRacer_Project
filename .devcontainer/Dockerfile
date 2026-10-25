@@ -10,6 +10,7 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         build-essential \
         git \
+        nano \
         python3-colcon-common-extensions \
         python3-pip \
         python3-venv \
