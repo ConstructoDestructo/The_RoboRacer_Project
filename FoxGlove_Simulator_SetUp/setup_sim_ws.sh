@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 
-set -euo pipefail
+set -e
 
 WORKSPACE="$HOME/sim_ws"
 SRC_DIR="$WORKSPACE/src"
