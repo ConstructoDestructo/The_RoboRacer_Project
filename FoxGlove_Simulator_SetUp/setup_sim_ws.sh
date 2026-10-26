@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 
-set -e
+set -euo pipefail
 
 WORKSPACE="$HOME/sim_ws"
 SRC_DIR="$WORKSPACE/src"
@@ -10,8 +10,6 @@ echo "Setting up F1TENTH ROS 2 workspace..."
 
 if [ ! -f "$ROS_SETUP" ]; then
     echo "ROS 2 Humble is not installed."
-    echo "Install ROS 2 Humble first:"
-    echo "https://docs.ros.org/en/humble/Installation.html"
     exit 1
 fi
 
@@ -34,10 +32,18 @@ fi
 source "$WORKSPACE/.venv/bin/activate"
 
 python3 -m pip install --upgrade pip
-# Install colcon into the virtual environment itself. The base ROS image also
-# contains a system colcon, but building with that interpreter can create ROS
-# Python entry points that cannot see packages installed in this venv.
-python3 -m pip install --ignore-installed --no-cache-dir colcon-common-extensions
+
+# Install colcon inside the virtual environment.
+python3 -m pip install \
+    --ignore-installed \
+    --no-cache-dir \
+    colcon-common-extensions
+
+# ROS 2 Humble requires this older EmPy version.
+python3 -m pip install \
+    --force-reinstall \
+    --no-cache-dir \
+    "empy==3.3.4"
 
 cd "$SRC_DIR"
 
@@ -78,9 +84,12 @@ rosdep install \
     -y
 
 hash -r
+
 "$WORKSPACE/.venv/bin/colcon" build --symlink-install
 
 echo
 echo "Workspace setup complete."
-echo "Use the following command to activate the simulator environment:"
-echo "source $HOME/sim_ws_setup/setup_sim_env.sh"
+echo
+echo "Activate the simulator environment with:"
+echo
+echo "source \$HOME/sim_ws_setup/setup_sim_env.sh"
