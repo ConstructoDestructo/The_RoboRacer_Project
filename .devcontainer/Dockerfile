@@ -10,8 +10,11 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         build-essential \
         git \
+        nano \
         python3-colcon-common-extensions \
+        python3-pil \
         python3-pip \
+        python3-scipy \
         python3-venv \
         tmux \
     && rm -rf /var/lib/apt/lists/*

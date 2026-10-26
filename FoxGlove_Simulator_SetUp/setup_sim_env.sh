@@ -21,9 +21,10 @@ fi
 
 source "$WORKSPACE/.venv/bin/activate"
 source /opt/ros/humble/setup.bash
-
-cd "$WORKSPACE"
 source "$WORKSPACE/install/local_setup.bash"
+
+# Keep the venv interpreter first even after sourcing ROS and the workspace.
+export PATH="$WORKSPACE/.venv/bin:$PATH"
 
 echo "F1TENTH simulator environment loaded."
 echo "Workspace: $WORKSPACE"

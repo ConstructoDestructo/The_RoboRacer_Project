@@ -36,6 +36,8 @@ Do not commit personal package work directly to `Shared_CodeBase`. You can creat
 
 The first setup can take several minutes. It creates the ROS workspace, installs the F1TENTH packages, installs dependencies, and builds the workspace.
 
+The Codespace image includes `nano`, Pillow, SciPy, and the ROS build tools. The setup also installs `colcon` inside the simulator's Python virtual environment so the generated Python ROS executables use the same environment as `f1tenth_gym`.
+
 ## 3. Ignore the startup warning
 
 After the Codespace opens, you may see a message similar to:
@@ -179,6 +181,16 @@ source /opt/ros/humble/setup.bash
 colcon build --symlink-install
 source install/local_setup.bash
 ```
+
+The package source remains in the repository under `custom_packages/`. The generated build files are kept inside the Codespace at:
+
+```text
+$HOME/sim_ws/build/    # intermediate compilation files
+$HOME/sim_ws/install/  # installed ROS packages and executables
+$HOME/sim_ws/log/      # build and test logs
+```
+
+These generated directories are not committed to GitHub. Every Codespace creates its own copies when `colcon build` runs.
 
 Run a package from a second terminal:
 

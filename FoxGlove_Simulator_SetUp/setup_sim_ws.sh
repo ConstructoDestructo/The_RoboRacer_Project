@@ -34,7 +34,10 @@ fi
 source "$WORKSPACE/.venv/bin/activate"
 
 python3 -m pip install --upgrade pip
-python3 -m pip install scipy
+# Install colcon into the virtual environment itself. The base ROS image also
+# contains a system colcon, but building with that interpreter can create ROS
+# Python entry points that cannot see packages installed in this venv.
+python3 -m pip install --ignore-installed --no-cache-dir colcon-common-extensions
 
 cd "$SRC_DIR"
 
@@ -74,7 +77,8 @@ rosdep install \
     --skip-keys python3-scipy \
     -y
 
-colcon build --symlink-install
+hash -r
+"$WORKSPACE/.venv/bin/colcon" build --symlink-install
 
 echo
 echo "Workspace setup complete."

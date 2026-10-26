@@ -58,7 +58,15 @@ The Codespace links this directory into `$HOME/sim_ws/src/custom_packages`, so t
 
 No. Teammates should commit the package source code and build files. They do not need to build the package on their own computer or commit a prebuilt executable.
 
-The Codespace builds the package with `colcon build`. The compiled executable is generated inside the Codespace under the workspace's `build/` and `install/` directories.
+The Codespace builds the package with `colcon build`. The compiled executable is generated inside the Codespace under:
+
+```text
+$HOME/sim_ws/build/    # intermediate compilation files
+$HOME/sim_ws/install/  # installed ROS packages and executables
+$HOME/sim_ws/log/      # build and test logs
+```
+
+These generated folders belong to the Codespace and should not be committed to GitHub.
 
 Do not commit these generated directories:
 
