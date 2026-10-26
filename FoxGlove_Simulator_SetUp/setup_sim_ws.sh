@@ -70,6 +70,9 @@ cd "$GYM_DIR"
 
 python3 -m pip install -e .
 
+# ROS 2 Humble references this variable while loading its setup script.
+export AMENT_TRACE_SETUP_FILES="${AMENT_TRACE_SETUP_FILES:-}"
+
 source "$ROS_SETUP"
 
 cd "$WORKSPACE"
