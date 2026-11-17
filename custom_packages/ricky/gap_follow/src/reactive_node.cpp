@@ -1,63 +1,71 @@
 // reactive_node.cpp
-// Lab 4: ghost-car obstacle avoidance, paired with a wall follower.
+// Lab 4: ghost-car obstacle avoidance, paired with a wall follower, with a
+// slow precise mode for tight gaps.
 //
 // THE IDEA (borrowed from our emergency-brake node)
 // -------------------------------------------------
-// Every plan, send out a fan of "ghost cars": see-through copies of the car,
-// one per candidate heading (-90..+90 deg). Each ghost drives the path the
-// real car would take to reach that heading:
+// Every plan, send out "ghost cars": see-through copies of the car, each
+// driving a different path the real car could take. At every step along its
+// path the ghost's WHOLE BODY is checked against the LiDAR points. The
+// distance a ghost gets before touching something is its "free distance".
+// The car follows the best ghost for 20 ms, then plans again from scratch.
 //
-//      turn (an arc, at the steering angle the car would really use)
-//      ... then straight.
+// TWO DRIVING MODES
 //
-// At every step along the path the ghost's WHOLE BODY is checked against the
-// LiDAR points, not just a line from the LiDAR. The distance the ghost gets
-// before touching something is that heading's "free distance".
+// CRUISE (open hallways): fast and smooth.
+//   Ghosts:  turn ghosts (swing to a heading, -90..+90 deg, then straight) and
+//            swerve ghosts (an S-bend lane change, then straight along the
+//            hallway), driven up to 4 m.
+//   Score:   free distance - squeeze penalty (tight paths cost more)
+//            - distance from the wall advisor's heading - lane change
+//            - change of mind.
 //
-// Why this is better than checking straight corridors: the car can't jump to
-// a new heading, it has to swing through an arc, and its body trails behind
-// the LiDAR. A ghost on the real arc knows when a turn won't fit.
-//
-// Each ghost is checked with two margins around the body:
-//   - hard margin    (a few cm): real contact. Used for speed and stopping.
-//   - comfort margin (side_margin): how much room we'd LIKE. Used to choose
-//     between headings, so the car takes the roomy path when there is one
-//     but can still squeeze through a tight gap when there isn't.
+// THREAD (tight spots, e.g. the three-box slalom): slow and precise.
+//   Entered when the best cruise path is blocked within thread_enter_free or
+//   squeezes within thread_enter_clearance; left once paths are wide open.
+//   Ghosts:  every pair of steering angles (one for the first thread_split m,
+//            another for the rest), driven thread_horizon m. Between them
+//            they draw slight diagonals, small jogs and S-bends, which a
+//            single turn cannot.
+//   Rule:    any ghost that touches something (body + thread_margin) is out.
+//   Score:   stay farthest from everything (aim for the middle of the gap)
+//            + get somewhere - end up off the advisor's direction
+//            - change the plan - try the side that just failed again.
+//   Speed:   thread_speed, so the car follows the plan to within a few cm.
 //
 // THE WALL ADVISOR (same math as Lab 3) suggests a preferred heading:
 //   - wall beside us        -> the heading that holds wall_distance
-//   - wall reading is junk  -> no opinion (straight). "Junk" = the two beams
-//                              disagree (one fell into a recess or onto an
-//                              obstacle), which shows up as a large wall angle.
+//   - wall reading is junk  -> no opinion. "Junk" = the two beams disagree
+//                              (one fell into a recess or onto an obstacle),
+//                              which shows up as a large wall angle.
 //   - a real hallway opened -> turn into it. "Real" = a ghost can turn into it
 //     on the wall side         and drive wall_open_depth with room to spare.
-//
-// CHOOSING: score = comfort free distance
-//                   - (distance from the preferred heading)
-//                   - (distance from the current heading)
-// The pull toward the preferred heading fades when the preferred way is
-// blocked, so the car doesn't keep driving at a wall out of preference.
 //
 // SPEED: never faster than the car could still stop within the chosen ghost's
 // free distance, slower in turns (grip), and already down to turning speed
 // by the time something ahead is turn_room away.
 //
-// BACKING UP: if no ghost can move forward, the car stops, then reverses a
-// short way with the wheels turned so its nose swings toward the open side,
-// and tries again. The LiDAR cannot see straight behind the car (its view is
-// 270 deg), so the back-up is short and slow, over floor the car just drove.
+// BACKING UP: if no ghost can move forward, the car stops, then reverses along
+// the path it just drove (floor known to be clear). The LiDAR cannot see
+// behind the car (its view is 270 deg), so the back-up is also checked against
+// dots seen in the last memory_time seconds, stops early enough to allow for
+// rolling, never goes past the recorded path, and gets longer if the car stays
+// stuck. The next THREAD attempt avoids the side that just failed.
 //
 // DIRECTION: the node has no built-in direction; the car drives the way it
-// is facing when it starts. wall_side picks the wall the advisor tracks; use
-// the INNER wall of the loop (clockwise -> "right", counter-clockwise -> "left").
+// is facing when it starts. wall_side picks the wall the advisor tracks. On the
+// Levine maps "right" works both ways: the inner wall when driving clockwise,
+// the outer wall counter-clockwise (that lines the car up for the south-east
+// corner of levine_obs).
 //
 // Reads only /scan and publishes only /drive (plus its own marker topic).
-// It knows its speed from the speed it last commanded, not from odometry.
+// It knows its speed and motion from what it commanded, not from odometry.
 
 #include <algorithm>
 #include <chrono>
 #include <cmath>
 #include <cstddef>
+#include <deque>
 #include <functional>
 #include <limits>
 #include <memory>
@@ -89,19 +97,26 @@ struct Params
 
   // ---- Ghost paths --------------------------------------------------------------
   double ghost_step = 0.10;      // m between ghost snapshots
-  double reaction_time = 0.05;   // s the ghost keeps going straight before it turns
+  double reaction_time = 0.05;   // s before a new steering command takes hold
+  double steer_rate = 3.2;       // rad/s, how fast the wheels can swing over
+  double speed_up_time = 0.20;   // s the car takes to pick up a higher commanded speed
+  double slow_down_time = 0.05;  // s it takes to drop to a lower one
   double radius_scale = 1.0;     // > 1 = assume the car turns wider than the geometry says
   double lookahead_time = 1.0;   // a heading must be clear for speed x this ...
   double lookahead_min = 1.5;    // ... but at least this (m) ...
   double lookahead_max = 4.0;    // ... and at most this (m)
   double heading_limit_deg = 90.0;
   double heading_step_deg = 5.0;
+  double swerve_max = 1.0;       // swerve ghosts move over sideways by up to this (m) ...
+  double swerve_step = 0.1;      // ... in steps of this (m)
 
   // ---- Scoring (meters of free distance "charged" per radian) -------------------
+  double squeeze_weight = 3.0;   // cost (m of free distance) per m a path is tighter than side_margin
   double turn_weight = 0.6;      // pull toward the preferred heading
+  double swerve_weight = 0.3;    // cost per m of sideways move (staying in lane is cheaper)
   double change_weight = 0.3;    // reluctance to change heading (keep below turn_weight)
   double change_cap_deg = 30.0;  // ... counted up to this much change
-  double heading_filter_tau = 0.05;  // s, smoothing of the chosen heading
+  double heading_filter_tau = 0.05;  // s, smoothing of the steering command
   double steer_gain = 1.0;       // steering angle = gain x chosen heading
 
   // ---- Speed --------------------------------------------------------------------
@@ -128,9 +143,32 @@ struct Params
 
   // ---- Backing up -------------------------------------------------------------------
   double reverse_speed = 0.5;     // m/s
-  double reverse_distance = 0.5;  // m per back-up
+  double reverse_distance = 0.4;  // m for the first back-up; each repeat in the same spot adds this much
+  double reverse_distance_max = 1.6;  // ... up to this (m)
+  double reverse_clearance = 0.25;    // stop backing up with at least this much room behind (m)
+  double reverse_brake_decel = 1.0;   // m/s^2 the car slows at when stopping a back-up
+  double memory_time = 6.0;           // s: remember nearby dots this long, for checking back-ups
+  double memory_radius = 1.5;         // m: ... the ones within this of the car
+
+  // ---- THREAD mode: slow, precise driving through tight gaps -----------------------
+  double thread_enter_free = 1.5;       // enter when the best cruise path is blocked within this (m) ...
+  double thread_enter_clearance = 0.08; // ... or squeezes closer than this to something (m)
+  double thread_exit_clearance = 0.15;  // leave once paths are fully open with this much room (m)
+  double thread_speed = 0.5;            // m/s
+  double thread_margin = 0.02;          // contact margin on each side in THREAD mode (m)
+  double thread_horizon = 1.8;          // how far each THREAD ghost drives (m)
+  double thread_split = 0.4;            // THREAD ghosts change steering after this far (m)
+  double thread_step = 0.05;            // m between THREAD ghost snapshots
+  double thread_clear_weight = 10.0;    // score per m of clearance (stay in the middle of the gap) ...
+  double thread_clear_cap = 0.25;       // ... counted up to this much clearance (m)
+  double thread_progress_weight = 1.0;  // score for getting somewhere (1 = full horizon)
+  double thread_align_weight = 0.5;     // cost per rad of ending up off the advisor's direction
+  double thread_commit_weight = 0.5;    // reluctance to change the plan
+  double thread_failed_weight = 1.0;    // cost of trying again on the side that just failed
 
   // ---- Switches / counts (not in the table below) ---------------------------------
+  bool use_thread = true;
+  int thread_exit_plans = 10;  // plans in a row of open space before leaving THREAD mode
   bool follow_wall = true;
   double wall_side = -1.0;   // -1 = right wall, +1 = left wall
   bool back_up = true;
@@ -156,12 +194,18 @@ inline const std::vector<ParamRef> & doubleParams()
     {"margin_spread", &Params::margin_spread},
     {"ghost_step", &Params::ghost_step},
     {"reaction_time", &Params::reaction_time},
+    {"steer_rate", &Params::steer_rate},
+    {"speed_up_time", &Params::speed_up_time},
+    {"slow_down_time", &Params::slow_down_time},
     {"radius_scale", &Params::radius_scale},
     {"lookahead_time", &Params::lookahead_time},
     {"lookahead_min", &Params::lookahead_min},
     {"lookahead_max", &Params::lookahead_max},
     {"heading_limit_deg", &Params::heading_limit_deg},
     {"heading_step_deg", &Params::heading_step_deg},
+    {"swerve_max", &Params::swerve_max},
+    {"swerve_step", &Params::swerve_step},
+    {"swerve_weight", &Params::swerve_weight},
     {"turn_weight", &Params::turn_weight},
     {"change_weight", &Params::change_weight},
     {"change_cap_deg", &Params::change_cap_deg},
@@ -187,6 +231,26 @@ inline const std::vector<ParamRef> & doubleParams()
     {"wall_turn_extra_margin", &Params::wall_turn_extra_margin},
     {"reverse_speed", &Params::reverse_speed},
     {"reverse_distance", &Params::reverse_distance},
+    {"reverse_distance_max", &Params::reverse_distance_max},
+    {"reverse_clearance", &Params::reverse_clearance},
+    {"reverse_brake_decel", &Params::reverse_brake_decel},
+    {"memory_time", &Params::memory_time},
+    {"memory_radius", &Params::memory_radius},
+    {"squeeze_weight", &Params::squeeze_weight},
+    {"thread_enter_free", &Params::thread_enter_free},
+    {"thread_enter_clearance", &Params::thread_enter_clearance},
+    {"thread_exit_clearance", &Params::thread_exit_clearance},
+    {"thread_speed", &Params::thread_speed},
+    {"thread_margin", &Params::thread_margin},
+    {"thread_horizon", &Params::thread_horizon},
+    {"thread_split", &Params::thread_split},
+    {"thread_step", &Params::thread_step},
+    {"thread_clear_weight", &Params::thread_clear_weight},
+    {"thread_clear_cap", &Params::thread_clear_cap},
+    {"thread_progress_weight", &Params::thread_progress_weight},
+    {"thread_align_weight", &Params::thread_align_weight},
+    {"thread_commit_weight", &Params::thread_commit_weight},
+    {"thread_failed_weight", &Params::thread_failed_weight},
   };
   return table;
 }
@@ -202,7 +266,27 @@ struct ScanView
 // which way the ghost faces (cos / sin of its heading)
 struct Pose { double x, y, c, s; };
 
-struct Free { double hard, comfort; };
+// How far a ghost gets (real contact / comfort margin) and the tightest side
+// clearance it has on the way (m, measured over the near part of the path)
+struct Free { double hard, comfort, clearance; };
+
+// One ghost car's plan. Either
+//   a turn:   swing to `heading` (rad, + = left), then drive straight, or
+//   a swerve: move over sideways by `shift` (m, + = left) with an S-bend,
+//             then carry on straight along the hallway.
+struct Ghost { double heading, shift; };
+
+// A ghost's path as geometry: four pieces, each an arc (curvature in 1/m,
+// + = left, 0 = straight) of some length (m), followed by a straight line.
+//   piece 0: what the car does while the wheels swing over to the new angle
+//            (it keeps going on its current arc)
+//   piece 1: the first arc of the ghost's plan
+//   piece 2: swerves only: the stretch covered while the wheels swing from
+//            full lock one way to full lock the other (roughly straight)
+//   piece 3: swerves only: the arc back
+struct Piece { double curvature, length; };
+struct Path { Piece piece[4]; };
+struct Result { Ghost ghost; Free free; };
 
 struct Output
 {
@@ -210,13 +294,25 @@ struct Output
   double speed = 0.0;
   const char * mode = "straight";  // what the advisor is doing
   double preferred = 0.0;          // heading the advisor asked for (rad)
-  double heading = 0.0;            // heading chosen (rad)
+  double heading = 0.0;            // chosen ghost: heading it turns to (rad) ...
+  double shift = 0.0;              // ... or sideways move it makes (m)
   double free = 0.0;               // how far the chosen ghost gets (m)
   double wall_distance = 0.0;      // m
   bool reversing = false;
   bool started_reverse = false;
+  double reverse_target = 0.0;     // how far this back-up will go (m)
   bool boxed_in = false;           // no way forward and no room to back up
   int ghosts = 0;                  // how many ghost cars were driven this plan
+  bool thread = false;             // THREAD mode was in charge of this plan
+};
+
+// What one THREAD ghost found out
+struct Thread
+{
+  double steer1 = 0.0, steer2 = 0.0;  // its two steering angles (rad)
+  double free = 0.0;        // how far it gets before contact (m)
+  double clearance = 0.0;   // closest it comes to anything on the way (m)
+  double end_x = 0.0, end_y = 0.0, end_heading = 0.0;  // where it ends up
 };
 
 class Planner
@@ -231,18 +327,48 @@ public:
     ghost_count_ = 0;
     const double length = std::max({p.lookahead_max, p.wall_open_depth, p.turn_room + 1.0});
     collectPoints(scan, length);
+    remember(dt);
 
-    // ---- Backing up -------------------------------------------------------------
+    // ---- Backing up: retrace the last stretch we drove --------------------------
     if (reversing_) {
-      reversed_ += p.reverse_speed * dt;
-      const double behind = reverseFree(reverse_steer_);
-      if (reversed_ >= p.reverse_distance || behind < 0.15) {
+      trackSpeed(-p.reverse_speed, dt);
+      const double step = std::max(0.0, -speed_estimate_) * dt;  // distance actually covered
+      reversed_ += step;
+      net_progress_ -= step;
+      // Replay the forward steering, newest first, over the same distances.
+      // That floor was clear a moment ago, which matters because the LiDAR
+      // cannot see straight behind the car.
+      double steer = 0.0;
+      double left = step;
+      while (left > 0.0 && !trail_.empty()) {
+        steer = trail_.back().steer;
+        if (trail_.back().distance > left) {
+          trail_.back().distance -= left;
+          trail_length_ -= left;
+          left = 0.0;
+        } else {
+          left -= trail_.back().distance;
+          trail_length_ -= trail_.back().distance;
+          trail_.pop_back();
+        }
+      }
+      // Backing up with the wheels turned swings the car the other way.
+      lane_heading_ -= speed_estimate_ * std::tan(steer) / std::max(0.01, p.wheelbase) * dt;
+      last_cmd_steer_ = steer;
+      // Stop with room to spare: the car keeps rolling back a little after
+      // the command changes (v^2 / 2a), so end the back-up that much early.
+      const double rolling =
+        p.reverse_speed * p.reverse_speed / (2.0 * std::max(0.1, p.reverse_brake_decel));
+      // Also stop once the recorded path runs out: beyond it is floor we
+      // never drove on, in the LiDAR's blind spot behind the car.
+      if (reversed_ + rolling >= reverse_target_ || trail_length_ < rolling ||
+          reverseFree(steer) < p.reverse_clearance + rolling) {
         reversing_ = false;
         blocked_ = 0;
-        heading_ = 0.0;
+        steer_ = 0.0;
         last_speed_ = 0.0;
       } else {
-        out.steer = reverse_steer_;
+        out.steer = steer;
         out.speed = -p.reverse_speed;
         out.mode = "BACKING UP";
         out.reversing = true;
@@ -250,38 +376,53 @@ public:
       }
     }
 
-    // ---- 1. Send out the fan of ghosts ---------------------------------------------
+    // ---- 1. Send out the ghosts ----------------------------------------------------------
     const double cap = std::clamp(last_speed_ * p.lookahead_time, p.lookahead_min,
                                   std::max(p.lookahead_min, p.lookahead_max));
+    // Which way does the hallway run, relative to the way we're pointing?
+    // The wall beams tell us when they sit on one wall; in between we keep
+    // track by adding up our own turning.
+    lane_heading_ -= speed_estimate_ * std::tan(steer_) / std::max(0.01, p.wheelbase) * dt;
+    bool wall_trusted = false;
+    double wall_alpha = 0.0;
+    const double wall_wish = wallHeading(scan, wall_trusted, out.wall_distance, wall_alpha);
+    if (wall_trusted) lane_heading_ = p.wall_side * wall_alpha;
+    if (std::abs(lane_heading_) > radians(75.0)) lane_heading_ = 0.0;  // we've turned a corner
+
+    fan_.clear();
+    // (a) Turn ghosts: swing to a heading, then go straight.
     const double step = radians(std::max(1.0, p.heading_step_deg));
     const int n = static_cast<int>(std::lround(radians(std::clamp(p.heading_limit_deg, 0.0, 120.0)) / step));
-    headings_.clear();
-    hard_.clear();
-    comfort_.clear();
-    for (int k = -n; k <= n; ++k) {
-      const double h = k * step;
-      const Free f = ghostFree(h, length, p.side_margin);
-      headings_.push_back(h);
-      hard_.push_back(f.hard);
-      comfort_.push_back(f.comfort);
+    for (int k = -n; k <= n; ++k) fan_.push_back(drive({k * step, 0.0}, length, p.side_margin, cap));
+    if (std::abs(lane_heading_) > 1e-3) {
+      fan_.push_back(drive({lane_heading_, 0.0}, length, p.side_margin, cap));  // straighten up
+    }
+    // (b) Swerve ghosts: move over sideways (an S-bend), then carry on straight
+    //     along the hallway. A turn ghost cannot show a way through that needs
+    //     a lane change, such as the open lane beside a dead-end pocket.
+    const double swerve_step = std::max(0.05, p.swerve_step);
+    const int swerves = static_cast<int>(std::lround(std::max(0.0, p.swerve_max) / swerve_step));
+    for (int k = 1; k <= swerves; ++k) {
+      fan_.push_back(drive({0.0, k * swerve_step}, length, p.side_margin, cap));
+      fan_.push_back(drive({0.0, -k * swerve_step}, length, p.side_margin, cap));
     }
 
     // ---- 2. The wall advisor's preferred heading ---------------------------------------
     double preferred = 0.0;
     if (p.follow_wall) {
-      bool trusted = false;
-      preferred = wallHeading(scan, trusted, out.wall_distance);
-      out.mode = trusted ? "wall" : "no wall";
+      preferred = wall_wish;
+      out.mode = wall_trusted ? "wall" : "no wall";
 
       // A real hallway on the wall side? Send ghosts down the steep headings
       // with extra side room; take the one that gets furthest (ties: least steep).
       const double turn_min = radians(p.wall_turn_min_deg) - 1e-9;
       bool found = false;
       double turn = 0.0, turn_free = 0.0;
-      for (std::size_t i = 0; i < headings_.size(); ++i) {
-        const double h = headings_[i];
+      for (int k = -n; k <= n; ++k) {
+        const double h = k * step;
         if (p.wall_side * h < turn_min) continue;
-        const double f = ghostFree(h, length, p.side_margin + p.wall_turn_extra_margin).comfort;
+        const double f =
+          drive({h, 0.0}, length, p.side_margin + p.wall_turn_extra_margin, cap).free.comfort;
         if (f < p.wall_open_depth) continue;
         const bool better = !found || f > turn_free + 1e-9 ||
           (std::abs(f - turn_free) <= 1e-9 && std::abs(h) < std::abs(turn));
@@ -291,29 +432,67 @@ public:
     }
 
     // ---- 3. Score every ghost (plus one on the advisor's exact heading) --------------------
-    const double preferred_free = ghostFree(preferred, length, p.side_margin).comfort;
-    // How open the preferred way is (1 = fully). The less open, the weaker its pull.
-    const double open_ratio = std::min(1.0, std::min(preferred_free, cap) / cap);
-    const double pull = p.turn_weight * open_ratio * open_ratio;
-    const double change_cap = radians(p.change_cap_deg);
+    fan_.push_back(drive({preferred, 0.0}, length, p.side_margin, cap));
+    // How open the preferred way is (1 = fully). Once it is blocked within
+    // our lookahead its pull fades to nothing: we will have to leave it anyway.
+    const double open_ratio =
+      std::clamp((std::min(fan_.back().free.hard, cap) / cap - 0.75) / 0.25, 0.0, 1.0);
+    const double pull = p.turn_weight * open_ratio;
+    const double roomy = p.side_margin + p.wall_turn_extra_margin;
+    const double change_cost = p.change_weight * radians(p.change_cap_deg);
     double best_score = -std::numeric_limits<double>::infinity();
-    double best_heading = 0.0;
-    const auto consider = [&](double h, double comfort) {
-      const double score = std::min(comfort, cap)
-        - pull * std::abs(h - preferred)
-        - p.change_weight * std::min(std::abs(h - heading_), change_cap);
-      if (score > best_score) { best_score = score; best_heading = h; }
-    };
-    for (std::size_t i = 0; i < headings_.size(); ++i) consider(headings_[i], comfort_[i]);
-    consider(preferred, preferred_free);
+    std::size_t best = 0;
+    for (std::size_t i = 0; i < fan_.size(); ++i) {
+      const Result & r = fan_[i];
+      const double score =
+        std::min(r.free.hard, cap)                                       // how far it gets
+        - p.squeeze_weight * std::max(0.0, roomy - r.free.clearance)     // how tight it is
+        - pull * std::abs(finalHeading(r.ghost) - preferred)             // off the advisor's heading
+        - p.swerve_weight * std::abs(r.ghost.shift)                      // leaving our lane
+        - change_cost * std::min(                                        // changing our mind
+            std::abs(firstSteer(r.ghost) - steer_) / std::max(0.05, p.max_steering), 1.5);
+      if (score > best_score) { best_score = score; best = i; }
+    }
+    const Result chosen = fan_[best];
+    chosen_path_ = pathFor(chosen.ghost);
+    double target_steer = firstSteer(chosen.ghost);
 
-    // ---- 4. Steer toward the winner (smoothed so it can't jump) ------------------------------
-    heading_ += dt / (std::max(0.0, p.heading_filter_tau) + dt) * (best_heading - heading_);
-    const double steer = std::clamp(p.steer_gain * heading_, -p.max_steering, p.max_steering);
+    // ---- 3b. THREAD mode: tight spot? Switch to slow, precise driving -------------------------
+    // The cruise ghosts turn once and then drive straight. In a tight cluster
+    // the way through often needs a slight diagonal or a small jog, which none
+    // of them can draw. THREAD ghosts steer one way, then another.
+    if (p.use_thread) {
+      const bool tight = chosen.free.hard < p.thread_enter_free ||
+                         chosen.free.clearance < p.thread_enter_clearance;
+      if (!thread_ && tight) {
+        thread_ = true;
+        open_plans_ = 0;
+      } else if (thread_) {
+        const bool open = !tight && chosen.free.hard >= cap - 1e-6 &&
+                          chosen.free.clearance >= p.thread_exit_clearance;
+        open_plans_ = open ? open_plans_ + 1 : 0;
+        if (open_plans_ >= std::max(1, p.thread_exit_plans)) thread_ = false;
+      }
+    } else {
+      thread_ = false;
+    }
+    Thread pick;
+    if (thread_) {
+      // Line up the way the wall advisor wants when it trusts the wall (good
+      // corner entries); otherwise just along the hallway.
+      pick = threadPlan(p.follow_wall && wall_trusted ? preferred : lane_heading_);
+      target_steer = pick.steer1;
+      out.mode = "THREAD";
+      out.thread = true;
+    }
+
+    // ---- 4. Steer the way the winning ghost starts out (smoothed so it can't jump) ----------
+    steer_ += dt / (std::max(0.0, p.heading_filter_tau) + dt) * (target_steer - steer_);
+    const double steer = std::clamp(steer_, -p.max_steering, p.max_steering);
 
     // ---- 5. Speed ---------------------------------------------------------------------------------
-    // How far the ghost on our actual heading gets before real contact.
-    const double free_now = ghostFree(heading_, length, p.side_margin).hard;
+    // How far the winning ghost gets before real contact.
+    const double free_now = thread_ ? pick.free : chosen.free.hard;
     // (a) Could still stop in time: v = sqrt(2 a d).
     const double v_brake =
       std::sqrt(std::max(0.0, 2.0 * p.brake_decel * (free_now - p.stop_buffer)));
@@ -327,6 +506,12 @@ public:
     const double v_ahead =
       std::sqrt(v_turn2 + 2.0 * p.brake_decel * std::max(0.0, free_now - p.turn_room));
     double speed = std::max(std::min({p.max_speed, v_brake, v_corner, v_ahead}), p.min_speed);
+    if (thread_) {
+      // Slow and precise: at thread_speed the car follows a plan to within a
+      // few cm. Still never faster than it could stop in.
+      const double crawl = std::min(p.thread_speed, p.min_speed);
+      speed = std::max(std::min({p.thread_speed, p.max_speed, v_brake}), crawl);
+    }
 
     // ---- 6. No way forward: stop, then back up ---------------------------------------------------------
     if (free_now < p.emergency_distance) {
@@ -335,26 +520,29 @@ public:
       if (blocked_ >= std::max(1, p.blocked_plans)) {
         out.boxed_in = true;
         if (p.back_up) {
-          // Which side is most open? (ties go to the wall side)
-          std::size_t open = 0;
-          double open_value = -std::numeric_limits<double>::infinity();
-          for (std::size_t i = 0; i < headings_.size(); ++i) {
-            const double value = hard_[i] + 1e-3 * p.wall_side * headings_[i];
-            if (value > open_value) { open_value = value; open = i; }
-          }
-          const double h = headings_[open];
-          const double direction = std::abs(h) > 1e-3 ? (h > 0.0 ? 1.0 : -1.0) : p.wall_side;
-          // Reverse with the wheels turned the other way so the nose swings
-          // toward the open side; if that's blocked, reverse straight.
-          for (const double candidate : {-direction * p.max_steering, 0.0}) {
-            if (reverseFree(candidate) >= 0.15) {
-              reversing_ = true;
-              reversed_ = 0.0;
-              reverse_steer_ = candidate;
-              out.started_reverse = true;
-              out.boxed_in = false;
-              break;
-            }
+          const double first_steer = trail_.empty() ? 0.0 : trail_.back().steer;
+          const double rolling =
+            p.reverse_speed * p.reverse_speed / (2.0 * std::max(0.1, p.reverse_brake_decel));
+          if (trail_length_ >= rolling + 0.10 &&
+              reverseFree(first_steer) >= p.reverse_clearance + rolling) {
+            // Stuck again without getting anywhere? Back up further each time,
+            // so the next try starts from a different view of the obstacles.
+            if (net_progress_ > 1.0) { stuck_streak_ = 0; failed_side_ = 0.0; }
+            ++stuck_streak_;
+            // Remember which side we were trying, so the next THREAD attempt
+            // leans toward the other one instead of repeating the same mistake.
+            if (thread_ && std::abs(pick.end_y) > 0.05) failed_side_ = pick.end_y > 0.0 ? 1.0 : -1.0;
+            thread_ = true;  // come back out of the back-up in THREAD mode
+            open_plans_ = 0;
+            net_progress_ = 0.0;
+            reverse_target_ = std::min({p.reverse_distance * stuck_streak_,
+                                        std::max(p.reverse_distance, p.reverse_distance_max),
+                                        trail_length_});
+            reversing_ = true;
+            reversed_ = 0.0;
+            out.started_reverse = true;
+            out.reverse_target = reverse_target_;
+            out.boxed_in = false;
           }
         }
       }
@@ -362,38 +550,169 @@ public:
       blocked_ = 0;
     }
 
+    // Remember what we just did, so a back-up can retrace it. Distances use
+    // our estimate of the real speed, which lags behind the commanded one.
+    trackSpeed(speed, dt);
+    if (speed_estimate_ > 0.0) {
+      const double moved = speed_estimate_ * dt;
+      trail_.push_back({steer, moved});
+      trail_length_ += moved;
+      net_progress_ += moved;
+      if (net_progress_ > 1.5) failed_side_ = 0.0;  // got somewhere: forget the failure
+      while (trail_length_ > p.reverse_distance_max + 1.0 && trail_.size() > 1) {
+        trail_length_ -= trail_.front().distance;
+        trail_.pop_front();
+      }
+    }
+
     last_speed_ = speed;
+    last_cmd_steer_ = steer;
     out.steer = steer;
     out.speed = speed;
     out.preferred = preferred;
-    out.heading = heading_;
+    out.heading = chosen.ghost.heading;
+    out.shift = chosen.ghost.shift;
     out.free = free_now;
     out.ghosts = ghost_count_;
     return out;
   }
 
-  // Where the ghost for heading h is after driving `distance` along its path:
-  // a short straight (reaction time), an arc at the steering the car would
-  // use, then straight along the new heading.
-  Pose ghostPose(double h, double distance) const
+  // Where the path the car is following (the winning ghost) is after
+  // `distance` m. For drawing it in Foxglove.
+  Pose plannedPose(double distance) const { return poseOn(chosen_path_, distance); }
+  bool threading() const { return thread_; }
+
+  // Turn a ghost's plan into path geometry.
+  Path pathFor(const Ghost & g) const
   {
-    const double lead = std::max(0.0, last_speed_) * p.reaction_time;
-    if (std::abs(h) < 1e-4) return {-p.lidar_to_rear_axle + distance, 0.0, 1.0, 0.0};
-    const double steer = std::min(std::abs(p.steer_gain * h), p.max_steering);
-    const double radius = p.radius_scale * p.wheelbase / std::tan(std::max(steer, 1e-6));
-    const double arc = radius * std::abs(h);
-    const double sign = h > 0.0 ? 1.0 : -1.0;
-    const double on_lead = std::min(distance, lead);
-    const double on_arc = std::clamp(distance - lead, 0.0, arc);
-    const double on_straight = std::max(distance - lead - arc, 0.0);
-    const double phi = on_arc / radius;
-    return {
-      -p.lidar_to_rear_axle + on_lead + radius * std::sin(phi) + on_straight * std::cos(h),
-      sign * radius * (1.0 - std::cos(phi)) + on_straight * std::sin(h),
-      std::cos(sign * phi), std::sin(sign * phi)};
+    const double wheelbase = std::max(0.01, p.wheelbase);
+    // Piece 0: the wheels can't jump to a new angle. While they swing over,
+    // the car carries on along the arc it is on now. (Treated as: hold the
+    // current angle for the reaction time plus half the swing time.)
+    const double target = firstSteer(g, 0.0);
+    const double swing_time = p.reaction_time +
+      0.5 * std::abs(target - steer_) / std::max(0.1, p.steer_rate);
+    const Piece lead{std::tan(steer_) / wheelbase / p.radius_scale,
+                     std::max(0.0, last_speed_) * swing_time};
+    const double turned = lead.curvature * lead.length;  // heading change during piece 0
+
+    if (std::abs(g.shift) > 1e-6) {
+      // Swerve: arc toward the new lane, arc back, end up pointing along the
+      // hallway, `shift` to the side of where we are now.
+      const double tight = tightestCurvature();
+      const double s = g.shift > 0.0 ? 1.0 : -1.0;
+      // u: how far we already point toward the side we're moving to.
+      const double u = -s * (lane_heading_ - turned);
+      const double between = swingOverDistance();
+      const double swing = swerveSwing(std::abs(g.shift), u, tight, between);
+      const double out_angle = std::max(0.0, swing - u);
+      return {{lead, {s * tight, out_angle / tight},
+               {0.0, out_angle > 1e-6 ? between : 0.0}, {-s * tight, swing / tight}}};
+    }
+    // Turn: one arc, at the steering the car would use, to the new heading.
+    const double remaining = g.heading - turned;
+    const double steer = std::min(std::abs(p.steer_gain * g.heading), p.max_steering);
+    const double curvature = std::max(1e-6, std::tan(steer) / wheelbase / p.radius_scale);
+    const double sign = remaining > 0.0 ? 1.0 : -1.0;
+    return {{lead, {sign * curvature, std::abs(remaining) / curvature}, {0.0, 0.0}, {0.0, 0.0}}};
+  }
+
+  // Where a ghost is after driving `distance` along a path: the rear axle's
+  // position in the LiDAR's frame, and the ghost's heading.
+  Pose poseOn(const Path & path, double distance) const
+  {
+    double x = -p.lidar_to_rear_axle;
+    double y = 0.0;
+    double heading = 0.0;
+    double left = distance;
+    for (const Piece & piece : path.piece) {
+      const double d = std::min(left, piece.length);
+      if (d <= 0.0) continue;
+      if (std::abs(piece.curvature) < 1e-9) {
+        x += d * std::cos(heading);
+        y += d * std::sin(heading);
+      } else {
+        const double next = heading + piece.curvature * d;
+        x += (std::sin(next) - std::sin(heading)) / piece.curvature;
+        y -= (std::cos(next) - std::cos(heading)) / piece.curvature;
+        heading = next;
+      }
+      left -= d;
+    }
+    x += left * std::cos(heading);  // the rest is straight
+    y += left * std::sin(heading);
+    return {x, y, std::cos(heading), std::sin(heading)};
+  }
+
+  Pose ghostPose(const Ghost & g, double distance) const { return poseOn(pathFor(g), distance); }
+
+  // The steering angle a ghost starts out with: what the car should do now
+  // to follow it. `turned` = heading change already made before its first arc.
+  double firstSteer(const Ghost & g, double turned = 0.0) const
+  {
+    if (std::abs(g.shift) > 1e-6) {
+      const double s = g.shift > 0.0 ? 1.0 : -1.0;
+      const double u = -s * (lane_heading_ - turned);
+      const double swing =
+        swerveSwing(std::abs(g.shift), u, tightestCurvature(), swingOverDistance());
+      // Normally start by steering toward the new lane; if we already point
+      // that way more than needed, start by steering back.
+      return (swing > u + 1e-3 ? s : -s) * p.max_steering;
+    }
+    return std::clamp(p.steer_gain * g.heading, -p.max_steering, p.max_steering);
+  }
+
+  // The tightest turn the car can make, as curvature (1/m).
+  double tightestCurvature() const
+  {
+    return std::tan(std::max(0.05, p.max_steering)) / std::max(0.01, p.wheelbase) / p.radius_scale;
+  }
+
+  // Distance covered while the wheels swing from full lock to full lock.
+  double swingOverDistance() const
+  {
+    return std::max(0.0, last_speed_) * 2.0 * p.max_steering / std::max(0.1, p.steer_rate);
+  }
+
+  // How far a swerve has to swing out (peak angle to the hallway, rad) to end
+  // up `shift` to the side. u = how far we already point toward that side.
+  // Sideways distance gained = first arc + the swing-over stretch + arc back.
+  double swerveSwing(double shift, double u, double tight, double between) const
+  {
+    const auto gained = [&](double swing) {
+      return (std::cos(u) - std::cos(swing)) / tight + between * std::sin(swing)
+             + (1.0 - std::cos(swing)) / tight;
+    };
+    double low = std::max(u, 0.0);
+    double high = kPi / 2.0;
+    if (gained(low) >= shift) return low;
+    if (gained(high) <= shift) return high;
+    for (int i = 0; i < 24; ++i) {
+      const double mid = 0.5 * (low + high);
+      (gained(mid) < shift ? low : high) = mid;
+    }
+    return 0.5 * (low + high);
+  }
+
+  // The direction a ghost ends up driving in (rad, relative to the car now).
+  double finalHeading(const Ghost & g) const
+  {
+    return std::abs(g.shift) > 1e-6 ? lane_heading_ : g.heading;
   }
 
   double lastSpeed() const { return last_speed_; }
+
+  // Our best guess of the car's real speed: it follows the commanded speed
+  // with a short delay (no odometry here, so we model it).
+  void trackSpeed(double commanded, double dt)
+  {
+    const double tau = std::abs(commanded) > std::abs(speed_estimate_)
+      ? p.speed_up_time : p.slow_down_time;
+    speed_estimate_ += dt / (std::max(0.0, tau) + dt) * (commanded - speed_estimate_);
+  }
+
+  // Every ghost from the last plan and how it did (for debugging).
+  const std::vector<Result> & fan() const { return fan_; }
 
 private:
   struct Point { double x, y; };
@@ -417,27 +736,158 @@ private:
     }
   }
 
+  // Short-term memory. Keep track of how the car has moved (from the speed
+  // and steering we commanded: no odometry), and keep the nearby dots of the
+  // last memory_time seconds in that fixed frame.
+  void remember(double dt)
+  {
+    const double ds = speed_estimate_ * dt;
+    odom_th_ += ds * std::tan(last_cmd_steer_) / std::max(0.01, p.wheelbase);
+    odom_x_ += ds * std::cos(odom_th_);
+    odom_y_ += ds * std::sin(odom_th_);
+    clock_ += dt;
+    while (!memory_.empty() && clock_ - memory_.front().t > p.memory_time) memory_.pop_front();
+    const double c = std::cos(odom_th_);
+    const double s = std::sin(odom_th_);
+    const double lx = odom_x_ + p.lidar_to_rear_axle * c;
+    const double ly = odom_y_ + p.lidar_to_rear_axle * s;
+    const double r2 = p.memory_radius * p.memory_radius;
+    for (std::size_t i = 0; i < points_.size(); i += 2) {  // every other dot is plenty
+      const Point & pt = points_[i];
+      const double bx = pt.x + p.lidar_to_rear_axle;  // from the rear axle
+      if (bx * bx + pt.y * pt.y > r2) continue;
+      memory_.push_back({lx + c * pt.x - s * pt.y, ly + s * pt.x + c * pt.y, clock_});
+    }
+  }
+
+  // THREAD mode: try every pair of steering angles (one for the first
+  // thread_split m, another for the rest) and pick the path that gets through
+  // while staying farthest from everything.
+  Thread threadPlan(double aim)
+  {
+    const double m = p.max_steering;
+    const double fractions[] = {0.0, 0.08, 0.2, 0.4, 0.7, 1.0};
+    std::vector<double> angles;
+    for (const double f : fractions) {
+      angles.push_back(f * m);
+      if (f > 0.0) angles.push_back(-f * m);
+    }
+    // Only dots a THREAD ghost could reach matter: keep those (much faster).
+    near_.clear();
+    const double reach = p.thread_horizon + frontLength() + p.car_half_width + p.thread_clear_cap + 0.2;
+    for (const Point & pt : points_) {
+      const double bx = pt.x + p.lidar_to_rear_axle;
+      if (bx * bx + pt.y * pt.y <= reach * reach) near_.push_back(pt);
+    }
+    Thread best;
+    double best_score = -std::numeric_limits<double>::infinity();
+    Thread furthest;  // fallback if nothing gets all the way through
+    for (const double s1 : angles) {
+      for (const double s2 : angles) {
+        const Thread t = threadGhost(s1, s2);
+        if (t.free > furthest.free + 1e-9) furthest = t;
+        if (t.free < p.thread_horizon - 1e-6) continue;  // touches something: out
+        const double progress = std::hypot(t.end_x + p.lidar_to_rear_axle, t.end_y) /
+                                std::max(0.1, p.thread_horizon);
+        double score =
+          p.thread_clear_weight * std::min(t.clearance, p.thread_clear_cap)
+          + p.thread_progress_weight * progress
+          - p.thread_align_weight * std::abs(t.end_heading - aim)
+          - p.thread_commit_weight * (std::abs(s1 - steer_) + 0.5 * std::abs(s2 - thread_steer2_)) /
+              std::max(0.05, m);
+        if (failed_side_ != 0.0 && t.end_y * failed_side_ > 0.05) score -= p.thread_failed_weight;
+        if (score > best_score) { best_score = score; best = t; }
+      }
+    }
+    const Thread pick = std::isfinite(best_score) ? best : furthest;
+    thread_steer2_ = pick.steer2;
+    chosen_path_ = threadPath(pick.steer1, pick.steer2);
+    return pick;
+  }
+
+  Path threadPath(double s1, double s2) const
+  {
+    const double wheelbase = std::max(0.01, p.wheelbase);
+    const double swing_time = p.reaction_time +
+      0.5 * std::abs(s1 - steer_) / std::max(0.1, p.steer_rate);
+    const Piece lead{std::tan(steer_) / wheelbase, std::max(0.0, last_speed_) * swing_time};
+    return {{lead, {std::tan(s1) / wheelbase, p.thread_split},
+             {std::tan(s2) / wheelbase, p.thread_horizon + 1.0}, {0.0, 0.0}}};
+  }
+
+  // Drive one THREAD ghost: how far until contact (body + thread_margin), and
+  // the closest it comes to any point on the way.
+  Thread threadGhost(double s1, double s2) const
+  {
+    ++ghost_count_;
+    Thread t;
+    t.steer1 = s1;
+    t.steer2 = s2;
+    const Path path = threadPath(s1, s2);
+    const double step = std::max(0.02, p.thread_step);
+    const int steps = static_cast<int>(std::ceil(p.thread_horizon / step));
+    const double rear = rearOverhang();
+    const double front = frontLength();
+    const double look = std::max(rear, front) + p.car_half_width + p.thread_clear_cap + 0.05;
+    double clearance = p.thread_clear_cap;
+    Pose g{-p.lidar_to_rear_axle, 0.0, 1.0, 0.0};
+    for (int k = 1; k <= steps; ++k) {
+      const double distance = std::min(k * step, p.thread_horizon);
+      g = poseOn(path, distance);
+      const double margin = std::min(p.thread_margin, p.margin_spread * distance);
+      for (const Point & pt : near_) {
+        const double rx = pt.x - g.x;
+        const double ry = pt.y - g.y;
+        if (std::abs(rx) > look || std::abs(ry) > look) continue;
+        const double bx = g.c * rx + g.s * ry;
+        const double by = std::abs(-g.s * rx + g.c * ry);
+        const double dx = std::max({-rear - bx, 0.0, bx - front});
+        const double dy = std::max(by - p.car_half_width, 0.0);
+        if (dx <= 0.0 && dy <= margin) {  // contact
+          t.free = (k - 1) * step;
+          t.clearance = clearance;
+          t.end_x = g.x; t.end_y = g.y; t.end_heading = std::atan2(g.s, g.c);
+          return t;
+        }
+        if (k > 1) clearance = std::min(clearance, std::hypot(dx, dy));
+      }
+    }
+    t.free = p.thread_horizon;
+    t.clearance = clearance;
+    t.end_x = g.x; t.end_y = g.y; t.end_heading = std::atan2(g.s, g.c);
+    return t;
+  }
+
   double rearOverhang() const { return p.lidar_to_rear - p.lidar_to_rear_axle; }   // axle -> rear bumper
   double frontLength() const { return p.lidar_to_rear_axle + p.lidar_to_front; }   // axle -> front bumper
 
-  // Drive one ghost toward heading h and report how far it gets before
-  //   .hard    : its body (+ hard margin) touches a point
-  //   .comfort : a point comes inside its comfort margin
+  Result drive(const Ghost & g, double length, double comfort_margin, double near) const
+  {
+    return {g, ghostFree(g, length, comfort_margin, near)};
+  }
+
+  // Drive one ghost and report how far it gets before
+  //   .hard      : its body (+ hard margin) touches a point
+  //   .comfort   : a point comes inside its comfort margin
+  //   .clearance : and the tightest side clearance on the near part of the way
   // A point that is ALREADY alongside the car (inside the comfort band right
   // now) only counts on real contact: we're passing it, not heading for it.
-  Free ghostFree(double h, double length, double comfort_margin) const
+  Free ghostFree(const Ghost & ghost, double length, double comfort_margin, double near) const
   {
     ++ghost_count_;
+    const double roomy = p.side_margin + p.wall_turn_extra_margin;
+    double clearance = roomy;  // tightest side clearance within `near` meters
     const double step = std::max(0.02, p.ghost_step);
     const int steps = static_cast<int>(std::ceil(length / step));
     const double rear = rearOverhang();
     const double front = frontLength() + p.front_margin;
-    const double reach = std::hypot(std::max(rear, front), p.car_half_width + comfort_margin) + 1e-6;
+    const double reach = std::hypot(std::max(rear, front), p.car_half_width + std::max(comfort_margin, roomy)) + 1e-6;
     const double reach2 = reach * reach;
+    const Path path = pathFor(ghost);
     int comfort_hit = 0;  // step of the first comfort-margin contact (0 = none yet)
     for (int k = 1; k <= steps; ++k) {
       const double distance = k * step;
-      const Pose g = ghostPose(h, distance);
+      const Pose g = poseOn(path, distance);
       const double hard = p.car_half_width + std::min(p.hard_margin, p.margin_spread * distance);
       const double comfort = p.car_half_width + std::min(comfort_margin, p.margin_spread * distance);
       for (const Point & pt : points_) {
@@ -447,9 +897,13 @@ private:
         const double bx = g.c * rx + g.s * ry;        // along the ghost's body
         if (bx < -rear || bx > front) continue;
         const double by = std::abs(-g.s * rx + g.c * ry);  // sideways from its centerline
+        // Side clearance counts points beside the body, not ones just ahead of the bumper.
+        if (distance <= near && bx <= front - p.front_margin - 0.10) {
+          clearance = std::min(clearance, std::max(0.0, by - p.car_half_width));
+        }
         if (by <= hard) {
           const double free = (k - 1) * step;
-          return {free, comfort_hit > 0 ? (comfort_hit - 1) * step : free};
+          return {free, comfort_hit > 0 ? (comfort_hit - 1) * step : free, clearance};
         }
         if (comfort_hit == 0 && by <= comfort) {
           const double bx0 = pt.x + p.lidar_to_rear_axle;
@@ -459,19 +913,30 @@ private:
         }
       }
     }
-    return {length, comfort_hit > 0 ? (comfort_hit - 1) * step : length};
+    return {length, comfort_hit > 0 ? (comfort_hit - 1) * step : length, clearance};
   }
 
-  // How far the car can back up with this steering before its body (plus a
-  // small margin) reaches a point the LiDAR can see. Reversing with the wheels
-  // turned left swings the tail left and the nose right.
+  // How far (up to 0.5 m) the car can back up with this steering before its
+  // body reaches a point the LiDAR can see. Points that are already alongside
+  // the body only count if the body would actually swing into them.
   double reverseFree(double steer) const
   {
-    const double step = std::max(0.02, p.ghost_step);
-    const int steps = static_cast<int>(std::ceil(p.reverse_distance / step));
+    // Check what we see now AND what we saw recently: by the time we back
+    // up, things beside and behind the car are in the LiDAR's blind spot.
+    std::vector<Point> check = points_;
+    const double c = std::cos(odom_th_);
+    const double s = std::sin(odom_th_);
+    const double lx = odom_x_ + p.lidar_to_rear_axle * c;  // where the LiDAR is now
+    const double ly = odom_y_ + p.lidar_to_rear_axle * s;
+    for (const Seen & m : memory_) {
+      const double dx = m.x - lx;
+      const double dy = m.y - ly;
+      check.push_back({c * dx + s * dy, -s * dx + c * dy});
+    }
+    const double step = 0.05;
+    const int steps = 10;  // looks up to 0.5 m behind
     const double rear = rearOverhang() + 0.05;
     const double front = frontLength();
-    const double half = p.car_half_width + 0.03;
     for (int k = 1; k <= steps; ++k) {
       const double distance = k * step;
       Pose g{-p.lidar_to_rear_axle - distance, 0.0, 1.0, 0.0};
@@ -482,15 +947,18 @@ private:
         g = {-p.lidar_to_rear_axle - radius * std::sin(phi), sign * radius * (1.0 - std::cos(phi)),
              std::cos(-sign * phi), std::sin(-sign * phi)};
       }
-      for (const Point & pt : points_) {
+      for (const Point & pt : check) {
         const double rx = pt.x - g.x;
         const double ry = pt.y - g.y;
         const double bx = g.c * rx + g.s * ry;
         if (bx < -rear || bx > front) continue;
+        const double bx0 = pt.x + p.lidar_to_rear_axle;
+        const bool alongside = bx0 >= -rearOverhang() && bx0 <= front;
+        const double half = p.car_half_width + (alongside ? 0.0 : 0.03);
         if (std::abs(-g.s * rx + g.c * ry) <= half) return (k - 1) * step;
       }
     }
-    return p.reverse_distance;
+    return steps * step;
   }
 
   // Range toward angle_deg (0 = straight ahead, + = left), taken as the
@@ -518,12 +986,12 @@ private:
   // Same two-beam math as Lab 3: beam b points straight at the wall side,
   // beam a is theta degrees further forward. Returns 0 (no opinion) and
   // trusted = false when the beams are not on one wall.
-  double wallHeading(const ScanView & scan, bool & trusted, double & distance) const
+  double wallHeading(const ScanView & scan, bool & trusted, double & distance, double & alpha) const
   {
     const double theta = radians(std::clamp(p.wall_theta_deg, 10.0, 70.0));
     const double b = medianRange(scan, p.wall_side * 90.0);
     const double a = medianRange(scan, p.wall_side * (90.0 - degrees(theta)));
-    const double alpha = std::atan2(a * std::cos(theta) - b, a * std::sin(theta));
+    alpha = std::atan2(a * std::cos(theta) - b, a * std::sin(theta));
     distance = b * std::cos(alpha);
     trusted = std::abs(alpha) <= radians(p.wall_max_angle_deg);
     if (!trusted) return 0.0;
@@ -537,13 +1005,31 @@ private:
   }
 
   std::vector<Point> points_;
-  std::vector<double> headings_, hard_, comfort_;
-  double heading_ = 0.0;      // smoothed chosen heading (rad, + = left)
-  double last_speed_ = 0.0;   // speed we last commanded (our "speedometer")
+  std::vector<Result> fan_;   // every ghost of the current plan
+  double steer_ = 0.0;        // smoothed steering command (rad, + = left)
+  double lane_heading_ = 0.0; // which way the hallway runs, relative to the car (rad, + = left)
+  bool thread_ = false;       // THREAD mode on
+  int open_plans_ = 0;        // plans in a row with open space (to leave THREAD mode)
+  double thread_steer2_ = 0.0;  // second steering angle of the last THREAD plan
+  double failed_side_ = 0.0;  // +1 / -1: the side the last stuck THREAD attempt tried
+  Path chosen_path_{};        // the path the car is following (for drawing)
+  struct Seen { double x, y, t; };
+  std::deque<Seen> memory_;   // recently seen nearby dots, in the dead-reckoned frame
+  std::vector<Point> near_;   // dots within reach of a THREAD ghost
+  double odom_x_ = 0.0, odom_y_ = 0.0, odom_th_ = 0.0;  // rear axle, dead-reckoned
+  double clock_ = 0.0;        // s since start
+  double last_cmd_steer_ = 0.0;
+  double last_speed_ = 0.0;   // speed we last commanded
+  double speed_estimate_ = 0.0;  // our guess of the real speed (our "speedometer")
   bool reversing_ = false;
   double reversed_ = 0.0;
-  double reverse_steer_ = 0.0;
+  double reverse_target_ = 0.0;
   int blocked_ = 0;
+  int stuck_streak_ = 0;       // back-ups in a row without real progress
+  double net_progress_ = 0.0;  // m gained since the last back-up began
+  struct Step { double steer, distance; };
+  std::deque<Step> trail_;     // what we commanded recently, oldest first
+  double trail_length_ = 0.0;
   mutable int ghost_count_ = 0;  // ghosts driven in the current plan (for the timing report)
 };
 }  // namespace gap
@@ -571,6 +1057,8 @@ public:
     p.follow_wall = declare_parameter<bool>("follow_wall", p.follow_wall);
     setWallSide(declare_parameter<std::string>("wall_side", "right"));
     p.back_up = declare_parameter<bool>("back_up", p.back_up);
+    p.use_thread = declare_parameter<bool>("use_thread", p.use_thread);
+    p.thread_exit_plans = static_cast<int>(declare_parameter<int>("thread_exit_plans", p.thread_exit_plans));
     p.beam_skip = static_cast<int>(declare_parameter<int>("beam_skip", p.beam_skip));
     p.blocked_plans = static_cast<int>(declare_parameter<int>("blocked_plans", p.blocked_plans));
     // The simulator sends scans far faster than a real LiDAR; plan at this rate.
@@ -616,9 +1104,10 @@ private:
     gap::Params & p = planner_.p;
     for (const auto & param : params) {
       const std::string & n = param.get_name();
-      if (n == "follow_wall" || n == "back_up") {
+      if (n == "follow_wall" || n == "back_up" || n == "use_thread") {
         if (param.get_type() == rclcpp::ParameterType::PARAMETER_BOOL) {
-          (n == "follow_wall" ? p.follow_wall : p.back_up) = param.as_bool();
+          (n == "follow_wall" ? p.follow_wall : n == "back_up" ? p.back_up : p.use_thread) =
+            param.as_bool();
           RCLCPP_INFO(get_logger(), "Live update: %s = %s", n.c_str(),
             param.as_bool() ? "true" : "false");
         }
@@ -686,7 +1175,7 @@ private:
     const double front = p.lidar_to_rear_axle + p.lidar_to_front;
     gap::Pose last{-p.lidar_to_rear_axle, 0.0, 1.0, 0.0};
     for (double d = 0.0; d <= length + 1e-6; d += 0.1) {
-      last = planner_.ghostPose(out.heading, d);
+      last = planner_.plannedPose(d);
       path.points.push_back(point(last.x + front * last.c, last.y + front * last.s));
     }
     markers.markers.push_back(path);
@@ -745,8 +1234,8 @@ private:
     drive_pub_->publish(command);
 
     if (out.started_reverse) {
-      RCLCPP_WARN(get_logger(), "No way forward: stopping, then backing up %.2f m",
-        planner_.p.reverse_distance);
+      RCLCPP_WARN(get_logger(), "No way forward: stopping, then backing up %.2f m the way we came",
+        out.reverse_target);
     }
     if (out.boxed_in) {
       RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 1000,

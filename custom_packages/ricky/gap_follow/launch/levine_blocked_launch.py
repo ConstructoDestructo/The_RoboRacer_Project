@@ -5,14 +5,20 @@ from launch_ros.actions import Node
 EXECUTABLE = 'reactive_node'
 
 PARAMS = {
-    # Wall advisor. Clockwise laps: the inner wall is on the car's RIGHT.
-    # For counter-clockwise laps set wall_side to 'left'.
+    # Wall advisor. 'right' works in both directions on the Levine maps:
+    # the inner wall clockwise, the outer wall counter-clockwise.
     'follow_wall': True,
     'wall_side': 'right',
     'wall_distance': 0.75,
 
     # Stop and back up a little when no ghost can move forward.
     'back_up': True,
+    # Slow, precise THREAD mode for tight gaps.
+    'use_thread': True,
+
+    # The simulator's car steers up to 0.4189 rad. MEASURE the real car's
+    # limit before using a launch file like this on it.
+    'max_steering': 0.41,
 
     'max_speed': 4.0,
     'min_speed': 0.8,
