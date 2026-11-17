@@ -142,8 +142,10 @@ The script will:
 3. Clone the `f1tenth_gym_ros` repository using the `dev-humble` branch.
 4. Clone `f1tenth_gym` if it is not already present.
 5. Install `f1tenth_gym` with pip.
-6. Install ROS dependencies with `rosdep`.
-7. Build the workspace with `colcon`.
+6. Install `colcon` inside the simulator virtual environment.
+7. Install the ROS-compatible `EmPy` version.
+8. Install ROS dependencies with `rosdep`.
+9. Build the workspace with the virtual environment's `colcon`.
 
 This step may take several minutes. It normally only needs to be repeated when the workspace is deleted or the source code changes significantly.
 
@@ -239,7 +241,8 @@ Codespaces automatically links this directory into `$HOME/sim_ws/src/custom_pack
 ```bash
 cd "$HOME/sim_ws"
 source /opt/ros/humble/setup.bash
-colcon build --symlink-install
+source "$HOME/sim_ws/.venv/bin/activate"
+"$HOME/sim_ws/.venv/bin/colcon" build --symlink-install
 source install/local_setup.bash
 ```
 
@@ -248,7 +251,7 @@ To update an existing Codespace from the current Git branch, run this from the r
 ```bash
 ./scripts/update_sim.sh
 ```
-+### Testing another teammate's package
+### Testing another teammate's package
 
 Use `Shared_CodeBase` when the package has already been merged. Stop the simulator, update the branch, and rebuild:
 
@@ -294,6 +297,47 @@ git pull --ff-only origin Shared_CodeBase
 Never commit the generated `$HOME/sim_ws/build/`, `$HOME/sim_ws/install/`, or `$HOME/sim_ws/log/` directories. They are created separately inside each Codespace.
 
 For the complete branch and package-testing workflow, see [CODESPACE_GUIDE.md](../CODESPACE_GUIDE.md) and [TEAM_PACKAGE_UPLOAD.md](../TEAM_PACKAGE_UPLOAD.md).
+
+## Changing the simulator map
+
+The shared simulator configuration is stored in the repository at:
+
+```text
+simulation/config/sim.yaml
+```
+
+To change the shared default map, edit the `map_path` value, commit the change to a branch, and create a pull request into `Shared_CodeBase`:
+
+```yaml
+map_path: 'maps/Spielberg'
+```
+
+After the change is merged, update and launch the simulator:
+
+```bash
+./scripts/update_sim.sh
+./launch_sim.sh
+```
+
+For a temporary personal test, edit the generated configuration instead:
+
+```bash
+nano "$HOME/sim_ws/src/f1tenth_gym_ros/config/sim.yaml"
+```
+
+Then rebuild with the virtual environment's `colcon`:
+
+```bash
+cd "$HOME/sim_ws"
+source /opt/ros/humble/setup.bash
+source "$HOME/sim_ws/.venv/bin/activate"
+"$HOME/sim_ws/.venv/bin/colcon" build \
+    --packages-select f1tenth_gym_ros \
+    --symlink-install
+source install/local_setup.bash
+```
+
+Do not run `./scripts/update_sim.sh` after a temporary edit because it restores the repository configuration.
 
 ## Troubleshooting
 

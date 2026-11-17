@@ -101,7 +101,11 @@ After the package is added to the repository, the teammate builds and runs it in
 
 ```bash
 cd "$HOME/sim_ws"
-colcon build --packages-select wall_follow --symlink-install
+source /opt/ros/humble/setup.bash
+source "$HOME/sim_ws/.venv/bin/activate"
+"$HOME/sim_ws/.venv/bin/colcon" build \
+    --packages-select wall_follow \
+    --symlink-install
 source install/local_setup.bash
 ros2 run wall_follow wall_node
 ```
@@ -113,16 +117,21 @@ To build after adding or changing packages:
 ```bash
 cd "$HOME/sim_ws"
 source /opt/ros/humble/setup.bash
-colcon build --symlink-install
+source "$HOME/sim_ws/.venv/bin/activate"
+"$HOME/sim_ws/.venv/bin/colcon" build --symlink-install
 source install/local_setup.bash
 ```
 
 To build one package only:
 
 ```bash
-colcon build --packages-select YOUR_PACKAGE_NAME --symlink-install
+source /opt/ros/humble/setup.bash
+source "$HOME/sim_ws/.venv/bin/activate"
+"$HOME/sim_ws/.venv/bin/colcon" build \
+    --packages-select YOUR_PACKAGE_NAME \
+    --symlink-install
 ```
-+## Testing another teammate's package
+## Testing another teammate's package
 
 If the package has already been merged into `Shared_CodeBase`, update that branch before testing:
 
@@ -166,3 +175,20 @@ ros2 run PACKAGE_NAME EXECUTABLE_NAME
 ```
 
 After a successful test, the teammate can create a pull request into `Shared_CodeBase`. Once it is merged, everyone can access the package by pulling the shared branch and running `./scripts/update_sim.sh`.
+
+## Changing the simulator map
+
+The shared map configuration is stored at:
+
+```text
+simulation/config/sim.yaml
+```
+
+Change the `map_path` value there, then commit and push the change. After it is merged into `Shared_CodeBase`, run:
+
+```bash
+./scripts/update_sim.sh
+./launch_sim.sh
+```
+
+For temporary map testing, edit the generated configuration instead and rebuild with the virtual-environment `colcon`. Do not run `./scripts/update_sim.sh` afterward, because it will restore the repository configuration.
