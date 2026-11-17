@@ -21,6 +21,21 @@ chmod +x "${SCRIPT_DESTINATION}/setup_sim_ws.sh" \
 
 bash "${REPO_ROOT}/scripts/link_custom_packages.sh"
 
+SIM_CONFIG_SOURCE="${REPO_ROOT}/simulation/config/sim.yaml"
+SIM_CONFIG_DESTINATION="${WORKSPACE}/src/f1tenth_gym_ros/config/sim.yaml"
+CUSTOM_MAPS_SOURCE="${REPO_ROOT}/simulation/maps"
+CUSTOM_MAPS_DESTINATION="${WORKSPACE}/src/f1tenth_gym_ros/maps"
+
+if [ -f "${SIM_CONFIG_SOURCE}" ]; then
+    cp "${SIM_CONFIG_SOURCE}" "${SIM_CONFIG_DESTINATION}"
+    echo "Applied repository simulator configuration."
+fi
+
+if [ -d "${CUSTOM_MAPS_SOURCE}" ]; then
+    cp -a "${CUSTOM_MAPS_SOURCE}/." "${CUSTOM_MAPS_DESTINATION}/"
+    echo "Applied repository simulator maps."
+fi
+
 if [ ! -f "/opt/ros/humble/setup.bash" ]; then
     echo "ROS 2 Humble was not found at /opt/ros/humble." >&2
     exit 1
