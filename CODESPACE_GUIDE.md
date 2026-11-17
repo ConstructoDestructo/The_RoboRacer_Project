@@ -178,7 +178,8 @@ The Codespace links `custom_packages` into `$HOME/sim_ws/src/custom_packages` du
 ```bash
 cd "$HOME/sim_ws"
 source /opt/ros/humble/setup.bash
-colcon build --symlink-install
+source "$HOME/sim_ws/.venv/bin/activate"
+"$HOME/sim_ws/.venv/bin/colcon" build --symlink-install
 source install/local_setup.bash
 ```
 
@@ -345,7 +346,69 @@ Never commit `build/`, `install/`, or `log/` to GitHub.
 
 For beginner-friendly instructions on copying a complete package with all of its folders, see [TEAM_PACKAGE_UPLOAD.md](TEAM_PACKAGE_UPLOAD.md).
 
-## 9. Update an existing Codespace
+## 9. Change the simulator map
+
+The repository-controlled simulator configuration is stored at:
+
+```text
+simulation/config/sim.yaml
+```
+
+The standard maps already included with the F1TENTH simulator include:
+
+```text
+maps/levine
+maps/Spielberg
+maps/blank
+maps/levine_blocked
+maps/levine_obs
+```
+
+To change the shared default map, edit the repository configuration:
+
+```bash
+nano simulation/config/sim.yaml
+```
+
+Change the `map_path` value, for example:
+
+```yaml
+map_path: 'maps/Spielberg'
+```
+
+Commit and publish the change, then rebuild:
+
+```bash
+git add simulation/config/sim.yaml
+git commit -m "Change simulator map"
+git push
+./scripts/update_sim.sh
+./launch_sim.sh
+```
+
+The update script copies the repository configuration into the generated ROS workspace before building it.
+
+For a temporary personal test, you may edit the generated file directly:
+
+```bash
+nano "$HOME/sim_ws/src/f1tenth_gym_ros/config/sim.yaml"
+```
+
+Then rebuild with the virtual-environment `colcon`:
+
+```bash
+cd "$HOME/sim_ws"
+source /opt/ros/humble/setup.bash
+source "$HOME/sim_ws/.venv/bin/activate"
+"$HOME/sim_ws/.venv/bin/colcon" build \
+    --packages-select f1tenth_gym_ros \
+    --symlink-install
+source install/local_setup.bash
+```
+
+Do not run `./scripts/update_sim.sh` after a temporary edit, because it will copy the repository configuration over it.
+
+## 10. Update an existing Codespace
 
 After new changes are pushed to the current branch, run this from the repository root:
 
@@ -353,9 +416,9 @@ After new changes are pushed to the current branch, run this from the repository
 ./scripts/update_sim.sh
 ```
 
-The update script pulls the branch, links the custom packages, installs new ROS dependencies, and rebuilds the workspace. It uses `git pull --ff-only`, so local uncommitted changes are not overwritten.
+The update script pulls the branch, links the custom packages, applies the repository simulator configuration, installs `f1tenth_gym` and the virtual-environment build tools, installs new ROS dependencies, and rebuilds the workspace with the virtual environment's `colcon`. It uses `git pull --ff-only`, so commit or save local repository changes before running it.
 
-## 10. Stop the simulator and Codespace
+## 11. Stop the simulator and Codespace
 
 To stop the simulator, press:
 

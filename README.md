@@ -16,6 +16,23 @@ See [custom_packages/README.md](custom_packages/README.md) for the package layou
 
 For beginner-friendly instructions on copying a complete package with all of its folders, see [TEAM_PACKAGE_UPLOAD.md](TEAM_PACKAGE_UPLOAD.md).
 
+## Simulator map configuration
+
+The shared simulator configuration is stored at:
+
+```text
+simulation/config/sim.yaml
+```
+
+Change the `map_path` value there, commit the change to a branch, and create a pull request into `Shared_CodeBase`. After the change is merged, run:
+
+```bash
+./scripts/update_sim.sh
+./launch_sim.sh
+```
+
+See [CODESPACE_GUIDE.md](CODESPACE_GUIDE.md) for temporary map testing and the required virtual-environment build commands.
+
 ## Updating an existing Codespace
 
 After new changes are pushed to the repository, run:
@@ -25,3 +42,4 @@ After new changes are pushed to the repository, run:
 ```
 
 This pulls the current branch, links the custom packages, installs any new ROS dependencies, and rebuilds the workspace.
+The update also installs the F1TENTH Python package and virtual-environment build tools, then builds with the virtual environment's `colcon`.

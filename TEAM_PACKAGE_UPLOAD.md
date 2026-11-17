@@ -101,7 +101,10 @@ Then build and run the package:
 ```bash
 cd "$HOME/sim_ws"
 source /opt/ros/humble/setup.bash
-colcon build --packages-select PACKAGE_NAME --symlink-install
+source "$HOME/sim_ws/.venv/bin/activate"
+"$HOME/sim_ws/.venv/bin/colcon" build \
+    --packages-select PACKAGE_NAME \
+    --symlink-install
 source install/local_setup.bash
 ros2 run PACKAGE_NAME EXECUTABLE_NAME
 ```
@@ -115,7 +118,7 @@ Keep the simulator running in another terminal with:
 ## 7. Share the package with the team
 
 When the package is ready to share, create a pull request from your personal branch into `Shared_CodeBase`. Do not delete your personal branch until the pull request has been reviewed and merged.
-+## 8. Test another teammate's package
+## 8. Test another teammate's package
 
 Packages can be tested before or after they are merged into `Shared_CodeBase`.
 
@@ -222,3 +225,39 @@ $HOME/sim_ws/log/
 ```
 
 Do not copy or commit those generated directories. They are rebuilt automatically by `./scripts/update_sim.sh`.
+
+## 9. Change the simulator map
+
+The shared simulator configuration is stored in the repository at:
+
+```text
+simulation/config/sim.yaml
+```
+
+To change the shared default map, edit the `map_path` line, commit the change to your branch, and create a pull request into `Shared_CodeBase`:
+
+```yaml
+map_path: 'maps/Spielberg'
+```
+
+After the change is merged, update the Codespace:
+
+```bash
+./scripts/update_sim.sh
+./launch_sim.sh
+```
+
+For a temporary personal map test, edit the generated configuration and rebuild with the virtual-environment `colcon`:
+
+```bash
+nano "$HOME/sim_ws/src/f1tenth_gym_ros/config/sim.yaml"
+cd "$HOME/sim_ws"
+source /opt/ros/humble/setup.bash
+source "$HOME/sim_ws/.venv/bin/activate"
+"$HOME/sim_ws/.venv/bin/colcon" build \
+    --packages-select f1tenth_gym_ros \
+    --symlink-install
+source install/local_setup.bash
+```
+
+Do not run `./scripts/update_sim.sh` after a temporary edit, because it restores the repository configuration.
